@@ -1,5 +1,5 @@
 /**
- Emanuele Ruffaldi @SSSA 2014
+ Emanuele Ruffaldi @SSSA 2014-2016
 
  C++11 Pooled Channel over boost IPC
 
@@ -29,26 +29,27 @@ template <class T, int maxN>
 class IPCPooledChannel
 {
 public:
-
    typedef  boost::interprocess::scoped_lock<boost::interprocess::interprocess_mutex> scoped_lock;
+
+   /**
+    * This is a data structure stored in the Shared Memory, it should NOT contain pointers
+    */
    struct Header
    {	
    		std::atomic<uint32_t> inited;
-
    		boost::interprocess::interprocess_mutex mutex_;
    		boost::interprocess::interprocess_condition  read_ready_var_, write_ready_var_;
-   		int readysize = 0,freesize = 0;
+   		int readysize = 0;
+   		int freesize = 0;
 
-   		Header(int effectiven)
+   		/// Constructs with a freelist
+   		Header(int effectiven) : freesize(effectiven)
    		{
-			freesize = effectiven;
 			for(int i = 0; i < effectiven; i++)
-			{
 				freelist[i] = i;
-			}
    		}
 
-
+   		/// pushes back the pointer wrt given base
    		inline void readypushback(T* p, T*pbase) // newest = append
 		{
 			readylist[readylisttail] = p-pbase;
@@ -56,6 +57,7 @@ public:
 			readysize++;
 		}
 
+		/// pops a pointer from the ready list
 		inline void readypopfront(T* & p, T*pbase) // oldest
 		{
 			readysize--;
@@ -63,13 +65,14 @@ public:
 			readylisthead = (readylisthead+1) % maxN;
 		}
 
-
+		/// pushes a new pointer into the free
 		inline void freepushfront(T* p, T*pbase)
 		{
 			freelist[freesize] = p-pbase;
 			freesize++;
 		}
 
+		/// pops any new
 		void freepopany(T * & p,T*pbase)
 		{
 		    p = pbase+freelist[freesize-1];
@@ -78,31 +81,30 @@ public:
 	private:
    		int readylist[maxN]; // circular list
    		int freelist[maxN]; // indices of free slots
-
-   		int readylisthead = 0,readylisttail = 0; // circular list structures
-
+   		int readylisthead = 0;
+   		int readylisttail = 0; // circular list structures
    };
+
    boost::interprocess::shared_memory_object shm_obj;
    boost::interprocess::mapped_region region;
-
-
 
    Header * pheader;
    T * pbase;
    bool discard_old_,alwayslast_; /// policy 
-   int effectiven;
+   int effectiven; 
+   std::string aname;
 
-   struct Payload{
+   /// this is the effective content of the shared memory objects. It is configured as a
+   /// variable length array
+   struct Payload
+   {
    		Header h;
    		T first[1];
    };
 
-   std::string aname ;
-
-
    void remove()
    {
-   	shm_obj.remove(aname.c_str());
+		shm_obj.remove(aname.c_str());
    }
 	/* creates the pool with n buffers, and the flag for the policy of discard in case of read
      TODO: check name
@@ -118,8 +120,12 @@ public:
 			throw "ciao";			
 		}
 		aname = name; //
+
 		// TODO check
 		bool existent = false;
+
+		// 1) Payload should be aligned but shm memory is aligned
+		// 2) Payload size is effeviely: sizeof(Payload)+align_of(T)
 		int s = sizeof(Payload) + sizeof(T)*(n-1);
 		try
 		{
@@ -144,10 +150,10 @@ public:
 		
 		effectiven = n;
 		Payload * pp = (Payload*)region.get_address();
-		pheader = &pp->h;
-		pbase = pp->first;
-
+		pheader = &pp->h; // pointer local to the process
+		pbase = pp->first; // pointer local to the process
 			
+		// the first one initializes the header the other one should wait for it
 		uint32_t desidered = 0;
 		if(pheader->inited.compare_exchange_strong(desidered,1))
 		{
