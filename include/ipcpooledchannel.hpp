@@ -39,45 +39,45 @@ public:
    		boost::interprocess::interprocess_condition  read_ready_var_, write_ready_var_;
    		int readysize = 0,freesize = 0;
 
-   		Header(int effectiven, T * pbase)
+   		Header(int effectiven)
    		{
 			freesize = effectiven;
 			for(int i = 0; i < effectiven; i++)
 			{
-				freelist[i] = pbase+i;
+				freelist[i] = i;
 			}
    		}
 
 
-   		inline void readypushback(T* p) // newest = append
+   		inline void readypushback(T* p, T*pbase) // newest = append
 		{
-			readylist[readylisttail] = p;
+			readylist[readylisttail] = p-pbase;
 			readylisttail = (readylisttail+1) % maxN;
 			readysize++;
 		}
 
-		inline void readypopfront(T* & p) // oldest
+		inline void readypopfront(T* & p, T*pbase) // oldest
 		{
 			readysize--;
-			p = readylist[readylisthead];
+			p = pbase+readylist[readylisthead];
 			readylisthead = (readylisthead+1) % maxN;
 		}
 
 
-		inline void freepushfront(T* p)
+		inline void freepushfront(T* p, T*pbase)
 		{
-			freelist[freesize] = p;
+			freelist[freesize] = p-pbase;
 			freesize++;
 		}
 
-		void freepopany(T * & p)
+		void freepopany(T * & p,T*pbase)
 		{
-		    p = freelist[freesize-1];
+		    p = pbase+freelist[freesize-1];
 		    freesize--;			
 		}
 	private:
-   		T* readylist[maxN]; // circular list
-   		T* freelist[maxN]; // indices of free slots
+   		int readylist[maxN]; // circular list
+   		int freelist[maxN]; // indices of free slots
 
    		int readylisthead = 0,readylisttail = 0; // circular list structures
 
@@ -151,7 +151,7 @@ public:
 		uint32_t desidered = 0;
 		if(pheader->inited.compare_exchange_strong(desidered,1))
 		{
-			new (pheader) Header(effectiven,pbase);
+			new (pheader) Header(effectiven);
 
 		 	// TODO: use a message queue for notifying the state ... or better use a named semaphore
 		 	pheader->inited = 2;
@@ -193,12 +193,12 @@ public:
 				else
 				{
 					// policy deleteold: kill the oldest
-					pheader->readypopfront(r);
+					pheader->readypopfront(r,pbase);
 					return r;
 				}
 			}
 			// free pop any
-			pheader->freepopany(r);
+			pheader->freepopany(r,pbase);
 		    return r;
 		}
 	}
@@ -209,7 +209,7 @@ public:
 		if(x)
 		{
 			scoped_lock lk(pheader->mutex_);
-			pheader->freepushfront(x);
+			pheader->freepushfront(x,pbase);
 		}		
 	}
 
@@ -220,7 +220,7 @@ public:
 		{
 			{
 				scoped_lock lk(pheader->mutex_);
-				pheader->readypushback(x);
+				pheader->readypushback(x,pbase);
 			}
 			pheader->read_ready_var_.notify_one();
 		}
@@ -258,7 +258,7 @@ public:
 		else
 		{
 			scoped_lock lk(pheader->mutex_);
-			pheader->freepushfront(in);
+			pheader->freepushfront(in,pbase);
 		}
 		pheader->write_ready_var_.notify_one();
 	}
@@ -273,11 +273,11 @@ private:
 			do
 			{
 				T* tmp;
-				pheader->readypopfront(tmp); // remove oldest
-				pheader->freepushfront(tmp); // recycle
+				pheader->readypopfront(tmp,pbase); // remove oldest
+				pheader->freepushfront(tmp,pbase); // recycle
 			} while(--n > 1);
 			pheader->write_ready_var_.notify_all(); // because we have freed resources
 		}
-		pheader->readypopfront(out); // remove oldest
+		pheader->readypopfront(out,pbase); // remove oldest
 	}
 };
