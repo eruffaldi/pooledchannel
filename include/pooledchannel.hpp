@@ -32,6 +32,7 @@ namespace detailpool
 		typedef std::vector<T> container_t;
 		static const bool unlimited = true;
 		static const int size = -1;
+		static const bool contiguous = true;
 		static void initandpopulate(container_t & c, int n, std::list<T*> & fl)
 		{
 			c.resize(n);
@@ -53,6 +54,7 @@ namespace detailpool
 		typedef std::array<T,n> container_t;
 		static const bool unlimited = false;
 		static const int size = n;
+		static const bool contiguous = true;
 		static void initandpopulate(container_t & c, int nignored, std::list<T*> & fl)
 		{
 			for(int i = 0; i < n; ++i)
@@ -70,6 +72,7 @@ namespace detailpool
 		typedef std::list<T> container_t;
 		static const bool unlimited = true;
 		static const int size = -1;
+		static const bool contiguous = false;
 		static void initandpopulate(container_t & c, int n, std::list<T*> & fl)
 		{
 			for(int i = 0; i < n; ++i)
