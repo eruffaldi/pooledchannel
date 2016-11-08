@@ -8,6 +8,30 @@ Bonus Shared memory
 
 Bonus reader/writer scheme for large  objects
 
+#Usage
+
+Template 
+  <T, container<T> > allows to specify the container (vector or list or array). Default is vector
+  
+##Constructor
+Constructor specifies the policy:
+
+    PooledChannel(int n, bool adiscardold, bool aalwayslast)
+    
+* n is the size of the buffer, n<=0 means infinite queue, but only if the container is not array<T,q>, otherwise use array size
+* adiscardold means that on overflow discard old data, otherwise discard new data
+* aalwayslast means that return only last one
+
+##Usage
+
+* write(const T &)
+* read(T &) returns bool
+* readNoWait(T&) 
+* readySize() returns available data for read
+* freeSize() returns available data for write
+
+In addition there is the transactional API
+
 #TODO 
 Make examples similar to Go channels
 
