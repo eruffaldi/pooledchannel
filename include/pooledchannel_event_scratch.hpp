@@ -33,7 +33,7 @@ namespace detailpool
 		using condition = struct event *;
 		using base = struct event_base *;
 
-		void init(condition & c, struct event_base *base)
+		void init(base & base, condition & c)
 		{
 	        c = event_new(base, -1, EV_PERSIST | EV_WRITE, NULL, NULL);			
 		}
@@ -46,10 +46,11 @@ namespace detailpool
 		template <class FX>
 		bool wait(condition & c, std::unique_lock<std::mutex> & lk, FX fx)
 		{
+			event_add(c,0);
 			return false;
 		}
 
-		
+
 	};
 #else
 	struct pool_cv_trait
@@ -57,7 +58,7 @@ namespace detailpool
 		struct base {};
 		using condition = std::condition_variable;
 
-		void init(condition & c, base & b)
+		void init(base & b, condition & c)
 		{
 		}
 
@@ -147,15 +148,21 @@ class PooledChannel
 	bool alwayslast_;  /// always return last value 
 	bool unlimited_;   /// unlimited
 	using condition_variable = typename pooltrait::pool_cv_trait::condition;
+	using base = pooltrait::pool_cv_trait::base ;
 	mutable std::mutex mutex_;
 	mutable condition_variable write_ready_var_,read_ready_var_;
 
+	base base_;
 public:	
 
 	/// creates the pool with n buffers, and the flag for the policy of discard in case of read
-	PooledChannel(int n, bool adiscardold, bool aalwayslast): discard_old_(adiscardold),alwayslast_(aalwayslast),
+	PooledChannel(int n, bool adiscardold, bool aalwayslast, base b = base()): base_(b),discard_old_(adiscardold),alwayslast_(aalwayslast),
 		unlimited_(detailpool::pooltrait<CT>::unlimited && n <= 0)
 	{
+		// ACTUALLY if(!pooltrait::pool_cv_trait::wait(write_ready_var_, lk, [this]{return !this->free_list_.empty();}))
+		// ACTUALLY if(!pooltrait::pool_cv_trait::wait(read_ready_var_, lk,[this]{return !this->ready_list_.empty();}))x
+		pooltrait::pool_cv_trait::init(base_,write_ready_var_);	
+		pooltrait::pool_cv_trait::init(base_,read_ready_var_);	
 		int nn = detailpool::pooltrait<CT>::size == -1 ? n : detailpool::pooltrait<CT>::size;
 		detailpool::pooltrait<CT>::initandpopulate(data_,nn,free_list_);
 	}
@@ -177,7 +184,7 @@ public:
 	/// returns a new writer buffer
 	///
 	/// if dowait and underflow it waits indefinetely
-	T* writerGet(bool dowait = true)
+	bool writerGet(bool dowait = true, std::function<void(T*> fx)
 	{
 		T * r = 0;
 		{
@@ -193,34 +200,34 @@ public:
 				else if(!discard_old_ || ready_list_.size() < 2)
 				{
 					if(!dowait)
-						return 0;
+						return false;
+// libevent - 
 					// fail if interrupted
 					if(!pooltrait::pool_cv_trait::wait(write_ready_var_, lk, [this]{return !this->free_list_.empty();}))
-						return 0;
+						return false;
 				}
 				else
 				{
 					// policy deleteold: kill the oldest
 					r = ready_list_.front();
-					ready_list_.pop_front();
-					return r;
+					ready_list_.pop_front();					
 				}
 			}
 			// pick any actually
 			r = free_list_.front();
 			free_list_.pop_front();
-			return r;
 		}
+		fx(r);
+		return true;
 	}
 
 	/// simple write
 	bool write(const T& x)
 	{
-		T * p = writerGet();
-		if(!p)
-			return false;
-		*p = x;
-		writerDone(p);
+		return writerGet([this](T * p) {
+			*p = x;
+			this->writerDone();
+		});
 	}
 
 	/// simple read
