@@ -95,7 +95,8 @@ class PooledChannel
 	bool unlimited_;   /// unlimited
 	mutable std::mutex mutex_;
 	mutable std::condition_variable write_ready_var_,read_ready_var_;
-
+	const bool dummyterminate_ = false; 
+	bool *terminate_ = &dummyterminate_;
 public:	
 
 	/// creates the pool with n buffers, and the flag for the policy of discard in case of read
@@ -105,6 +106,10 @@ public:
 		int nn = detailpool::pooltrait<CT>::size == -1 ? n : detailpool::pooltrait<CT>::size;
 		detailpool::pooltrait<CT>::initandpopulate(data_,nn,free_list_);
 	}
+
+	bool is_terminated() const { return *terminate_; }
+
+	void set_termination(bool * p) { terminate_ = p ? p : &dummyterminate_; }
 
 	/// returns the count of data ready
 	int readySize() const 
@@ -140,7 +145,9 @@ public:
 				{
 					if(!dowait)
 						return 0;
-					write_ready_var_.wait(lk, [this]{return !this->free_list_.empty();});
+					write_ready_var_.wait(lk, [this]{return is_terminated() && !this->free_list_.empty();});
+					if(is_terminated())
+						return 0; // FAIL
 				}
 				else
 				{
@@ -185,7 +192,9 @@ public:
 		T * p = 0;
 		readerGetNoWait(p);
 		if(!p)
+		{
 			return false;
+		}
 		x = *p;
 		readerDone(p);
 		return true;	
@@ -229,10 +238,13 @@ public:
 	}
 
 	/// gets a buffer to be read, in case it is not ready it wais for new data
+	/// out = 0 if there is no more buffer (or termination)
 	void readerGet(T * & out)
 	{
 		std::unique_lock<std::mutex> lk(mutex_);
-	    read_ready_var_.wait(lk, [this]{return !this->ready_list_.empty();});
+	    read_ready_var_.wait(lk, [this]{return is_terminated() && !this->ready_list_.empty();});
+		if(is_terminated())
+			return;
 	    readerGetReady(out);
 	}
 
