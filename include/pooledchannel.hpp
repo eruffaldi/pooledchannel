@@ -1,3 +1,4 @@
+#pragma once
 /**
  Emanuele Ruffaldi @SSSA 2014
 
@@ -172,9 +173,15 @@ public:
 	{
 		T * p = writerGet();
 		if(!p)
+		{
 			return false;
-		*p = x;
-		writerDone(p);
+		}
+		else
+		{
+			*p = x;
+			writerDone(p);
+			return true;
+		}
 	}
 
 	/// simple read
@@ -183,10 +190,15 @@ public:
 		T * p = 0;
 		readerGet(p);
 		if(!p)
+		{
 			return false;
-		x = *p;
-		readerDone(p);
-		return true;	
+		}
+		else
+		{
+			x = *p;
+			readerDone(p);
+			return true;	
+		}
 	}
 
 	/// reader no wait
@@ -198,9 +210,12 @@ public:
 		{
 			return false;
 		}
-		x = *p;
-		readerDone(p);
-		return true;	
+		else
+		{
+			x = *p;
+			readerDone(p);
+			return true;	
+		}
 	}
 
 	/// releases a writer buffer without storing it (aborted transaction)
@@ -246,22 +261,23 @@ public:
 	{
 		std::unique_lock<std::mutex> lk(mutex_);
 	    read_ready_var_.wait(lk, [this]{return is_terminated() || !this->ready_list_.empty();});
-		if(is_terminated())
-			return;
-	    readerGetReady(out);
+		if(!is_terminated())
+		{
+		    readerGetReady(out);
+		}
 	}
 
 	/// releases a buffer provided by the readerGet
 	void readerDone(T * in)
 	{
-		if(!in)
-			return;
-		else
+		if(in)
 		{
-			std::unique_lock<std::mutex> lk(mutex_);
-			free_list_.push_back(in);
+			{
+				std::unique_lock<std::mutex> lk(mutex_);
+				free_list_.push_back(in);
+			}
+			write_ready_var_.notify_one();
 		}
-		write_ready_var_.notify_one();
 	}
 
 	/*
@@ -273,7 +289,8 @@ public:
 	{
 		T * p_;
 		PooledChannel& c_;
-		WriteScope(PooledChannel & c):c_(c) {
+		WriteScope(PooledChannel & c):c_(c) 
+		{
 			p_ = c.writerGet();
 		}
 
@@ -286,7 +303,9 @@ public:
 		~WriteScope()
 		{
 			if(p_)
+			{
 				c_.writerDone(p_);
+			}
 		}
 
 		operator bool () { return p_ != 0;}
@@ -304,15 +323,21 @@ public:
 		PooledChannel & c_;
 		ReadScope(PooledChannel & c, bool dowait,  bool wait): c_(c),p_(0) {
 			if(wait)
+			{
 				c.readerGet(p_);
+			}
 			else
+			{
 				c.readerGetNoWait(p_);
+			}
 		}
 
 		~ReadScope()
 		{
 			if(p_)
+			{
 				c_.readerDone(p_);
+			}
 		}
 
 		operator bool () { return p_ != 0;}
