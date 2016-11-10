@@ -7,3 +7,5 @@ include_directories(../include)
 add_executable(ipcpooledchanneltest ipcpooledchanneltest.cpp)
 
 add_executable(pooledchanneltest pooledchanneltest.cpp)
+
+add_executable(termination termination.cpp)

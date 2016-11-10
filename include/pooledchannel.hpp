@@ -96,7 +96,7 @@ class PooledChannel
 	mutable std::mutex mutex_;
 	mutable std::condition_variable write_ready_var_,read_ready_var_;
 	const bool dummyterminate_ = false; 
-	bool *terminate_ = &dummyterminate_;
+	const bool *terminate_ = &dummyterminate_;
 public:	
 
 	/// creates the pool with n buffers, and the flag for the policy of discard in case of read
@@ -109,7 +109,7 @@ public:
 
 	bool is_terminated() const { return *terminate_; }
 
-	void set_termination(bool * p) { terminate_ = p ? p : &dummyterminate_; }
+	void set_termination(const bool * p) { terminate_ = p ? p : &dummyterminate_; }
 
 	/// returns the count of data ready
 	int readySize() const 
@@ -145,7 +145,7 @@ public:
 				{
 					if(!dowait)
 						return 0;
-					write_ready_var_.wait(lk, [this]{return is_terminated() && !this->free_list_.empty();});
+					write_ready_var_.wait(lk, [this]{return is_terminated() || !this->free_list_.empty();});
 					if(is_terminated())
 						return 0; // FAIL
 				}
@@ -242,7 +242,7 @@ public:
 	void readerGet(T * & out)
 	{
 		std::unique_lock<std::mutex> lk(mutex_);
-	    read_ready_var_.wait(lk, [this]{return is_terminated() && !this->ready_list_.empty();});
+	    read_ready_var_.wait(lk, [this]{return is_terminated() || !this->ready_list_.empty();});
 		if(is_terminated())
 			return;
 	    readerGetReady(out);
