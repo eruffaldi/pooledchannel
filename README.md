@@ -1,5 +1,5 @@
 
-#Pooled Channel in Local or Shared memory
+# Pooled Channel in Local or Shared memory
 Emanuele Ruffaldi 2014-2016
 
 Conceptually similar to Python Queue
@@ -8,12 +8,12 @@ Bonus Shared memory
 
 Bonus reader/writer scheme for large  objects
 
-#Usage
+# Usage
 
 Template 
   <T, container<T> > allows to specify the container (vector or list or array). Default is vector
   
-##Constructor
+## Constructor
 Constructor specifies the policy:
 
     PooledChannel(int n, bool adiscardold, bool aalwayslast)
@@ -22,7 +22,7 @@ Constructor specifies the policy:
 * adiscardold means that on overflow discard old data, otherwise discard new data
 * aalwayslast means that return only last one
 
-##Usage
+## Usage
 
 * write(const T &)
 * read(T &) returns bool
@@ -32,13 +32,13 @@ Constructor specifies the policy:
 
 In addition there is the transactional API
 
-#TODO 
+# TODO 
 Make examples similar to Go channels
 
-#TODO Regular
+# TODO Regular
 * implement the lockfree scheme of boost using C++11 policy
 
-#TODO IPC
+# TODO IPC
 Currently we use boost for sharing in IPC case but there are other interesting options that overcome the issues with the naming scheme of boost/Unix shared memory:
 
 - memfd under linux + Unix socket for transferring the descriptor
