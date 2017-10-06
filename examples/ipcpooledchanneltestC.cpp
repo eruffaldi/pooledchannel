@@ -7,6 +7,7 @@ struct Content
 {
 std::chrono::time_point<std::chrono::high_resolution_clock> time;
 int value;
+int z[128];
 int datum[128000];
 };
 
@@ -14,6 +15,7 @@ int datum[128000];
 
 	std::cout << "after ctor\n";
 	std::cout << "sizes " << pc.readySize() << " " << pc.freeSize() << std::endl;
+	std::cout << "itemsize " << sizeof(Content) << std::endl;
 
 	while(true)
 	{

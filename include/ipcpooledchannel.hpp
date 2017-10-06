@@ -86,6 +86,7 @@ public:
    		int readysize = 0;
    		int freesize = 0;
    		int buffersize = 0;
+   		std::atomic<int> inited_;
    		boost::interprocess::interprocess_mutex mutex_;
    		boost::interprocess::interprocess_condition  read_ready_var_, write_ready_var_;
    		boost::interprocess::offset_ptr<dynamic_content > readfreelist; // all together but separate
@@ -94,6 +95,7 @@ public:
    		Header(int effectiven,Header::dynamic_content *pq) : freesize(effectiven),buffersize(effectiven)
    		{
    			readfreelist = pq;
+   			inited_ = 1;
 			for(int i = 0; i < effectiven; i++)
 				pq[i].freeindex = i;
    		}
@@ -148,6 +150,8 @@ std::shared_ptr<boost::interprocess::named_mutex> mutex;
    struct PayloadMeta
    {
    		int sharedmemorysize;
+   		char typesignature[256];
+   		int itemsize;
    };
 
    /// this is the effective content of the shared memory objects. It is configured as a
@@ -180,6 +184,16 @@ std::shared_ptr<boost::interprocess::named_mutex> mutex;
 	 		std::cout << "cmapped\n";
 		 	PayloadMeta * ptr = (PayloadMeta*)r.get_address();
 		 	effectivsize = ptr->sharedmemorysize;
+		 	if(strcmp(typeid(T).name(),ptr->typesignature) != 0)
+		 	{
+		 		std::cerr << "IPC client type mismatch. Expected " << typeid(T).name() << " got " << ptr->typesignature << std::endl;
+		 		return;
+		 	}
+		 	if(ptr->itemsize != sizeof(T))
+		 	{
+		 		std::cerr << "IPC client type size mismatch. Expected " << sizeof(T) << " got " <<  ptr->itemsize << std::endl;
+		 		return;		 		
+		 	}
 	 	}
 	 	catch(...)
 	 	{
@@ -213,7 +227,7 @@ std::shared_ptr<boost::interprocess::named_mutex> mutex;
 			
 	}
 
-	IPCPooledChannel(std::string name, WriterTag, int n, DiscardPolicy discardpolicy):
+	IPCPooledChannel(std::string name, WriterTag, int n, DiscardPolicy discardpolicy,bool resume):
 		discard_old_(discardpolicy == DiscardPolicy::DiscardOld),alwayslast_(false)
 	{
 
@@ -221,11 +235,51 @@ std::shared_ptr<boost::interprocess::named_mutex> mutex;
 		// 2) Payload size is effeviely: sizeof(Payload)+align_of(T)
 		int s = sizeof(Payload) + (sizeof(typename Header::dynamic_content )+sizeof(T))*n;
 
+		if(!resume)
+		{
+	 		boost::interprocess::shared_memory_object::remove((name+"meta").c_str());
+	 		boost::interprocess::shared_memory_object::remove((name).c_str());
+		}
+
+		try
+		{
+	 		boost::interprocess::shared_memory_object shm_obj1(boost::interprocess::open_or_create, (name+"meta").c_str(), boost::interprocess::read_write);
+	 		std::cerr << "opened meta\n";
+	 		shm_objmeta.swap(shm_obj1);
+	 		shm_objmeta.truncate(sizeof(PayloadMeta));
+	 		std::cerr << "truncated meta\n";
+			boost::interprocess::mapped_region r(shm_objmeta,boost::interprocess::read_write);
+		 	PayloadMeta * ptr = (PayloadMeta*)r.get_address();
+		 	if(ptr->typesignature[0] != 0 && strcmp(typeid(T).name(),ptr->typesignature) != 0)
+		 	{
+		 		std::cerr << "IPC serve type mismatch. Expected " << typeid(T).name() << " got " << ptr->typesignature << std::endl;
+		 		return;
+		 	}
+		 	if(ptr->itemsize != 0 && ptr->itemsize != sizeof(T))
+		 	{
+		 		std::cerr << "IPC server type size mismatch. Expected " << sizeof(T) << " got " <<  ptr->itemsize << std::endl;
+		 		return;		 		
+		 	}
+		 	strcpy(ptr->typesignature,typeid(T).name());
+		 	ptr->itemsize = sizeof(T);
+		 	if(ptr->sharedmemorysize != 0 && ptr->sharedmemorysize < s)
+		 	{
+		 		s = ptr->sharedmemorysize;
+		 	}
+	 	}
+	 	catch(...)
+	 	{
+	 		std::cerr << "existing server " + name << "meta\n";
+	 		return;
+	 	}
+
 	 	try
 	 	{
 	 		boost::interprocess::shared_memory_object shm_obj1(boost::interprocess::open_or_create, name.c_str(), boost::interprocess::read_write);
 	 		shm_obj.swap(shm_obj1);
 	 		shm_obj.truncate(s);
+	 		// TODO CHECK if existing size is < than this one
+	 		// TODO CHECK the type signature
 	 	}
 	 	catch(...)
 	 	{
@@ -233,17 +287,6 @@ std::shared_ptr<boost::interprocess::named_mutex> mutex;
 	 		return; 
 	 	}
 
-		try
-		{
-	 		boost::interprocess::shared_memory_object shm_obj1(boost::interprocess::open_or_create, (name+"meta").c_str(), boost::interprocess::read_write);
-	 		shm_objmeta.swap(shm_obj1);
-	 		shm_objmeta.truncate(sizeof(PayloadMeta));
-	 	}
-	 	catch(...)
-	 	{
-	 		std::cerr << "existing server " + name << "meta\n";
-	 		return;
-	 	}
 		aname = name; 
 
 		{
@@ -265,7 +308,13 @@ std::shared_ptr<boost::interprocess::named_mutex> mutex;
 		pbase = pp->first.get(); // pointer local to the process
 			
 		std::cout << "allocating " << effectiven << " " << pheader << std::endl;
- 		new (pheader) Header(effectiven,(typename Header::dynamic_content *)(ptr+sizeof(Payload)));
+		if(pheader->inited_ != 0)
+		{
+		}
+ 		else
+ 		{
+ 			new (pheader) Header(effectiven,(typename Header::dynamic_content *)(ptr+sizeof(Payload)));
+ 		}
 		std::cout << "done "<<std::endl;
 	}
 

@@ -3,13 +3,15 @@
 int main(int argc , char* argv[])
 {
 	struct Content
-{
-std::chrono::time_point<std::chrono::high_resolution_clock> time;
-int value;
-int datum[128000];
-};
-	IPCPooledChannel<Content> pc("pippo",WriterTag(),3,DiscardPolicy::NoDiscard);
+	{
+		std::chrono::time_point<std::chrono::high_resolution_clock> time;
+		int value;
+		int datum[128000];
+	};
+
+	IPCPooledChannel<Content> pc("pippo",WriterTag(),3,DiscardPolicy::NoDiscard,argc > 1); // resume
 	int frame = 0;
+	std::cout << "itemsize " << sizeof(Content) << std::endl;
 
 	while(true)
 	{
