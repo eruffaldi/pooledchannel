@@ -3,6 +3,35 @@
 
  C++11 Pooled Channel over boost IPC
 
+ Design:
+
+ - publisher/subscriber access to the Shared Memory queue
+
+	subscriber 
+		what do to when there is no publisher? 
+			e.g. ROS uses a mediator to handle this
+
+
+ 	subscriber connection with master: (XMLRPC HTTP)
+ 		on new pusblisher (name, Type):
+ 			connect to publisher
+
+
+ 	subscriber connection X to publisher Y (name,Type)
+ 		on disconnection of Y
+ 			remove
+
+ - multiple subscriber in the single publisher shared memory
+
+ 	instead T we store pair<T,int> as reference count
+
+	freepushfront(X) => move X into freelist
+	freepushfront(X) =>
+		decrease counter(X)
+		if counter(X) == 0 move into freelist
+
+	readypushback(X) => assign number of current subscribers	
+
  */
 #include <iostream>
 #include <list>
@@ -10,12 +39,16 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <memory>
 
 #include <boost/interprocess/shared_memory_object.hpp>
 #include <boost/interprocess/mapped_region.hpp>
 #include <boost/interprocess/sync/interprocess_mutex.hpp>
 #include <boost/interprocess/sync/interprocess_condition.hpp>
 #include <boost/interprocess/sync/scoped_lock.hpp>
+#include <boost/interprocess/sync/scoped_lock.hpp>
+#include <boost/interprocess/offset_ptr.hpp>
+#include <boost/interprocess/sync/named_mutex.hpp>
 
 /// Conceptual Life of pools
 /// [*] -> free -> writing -> ready -> reading -> free
@@ -25,7 +58,14 @@
 ///
 /// TODO: current version requires default constructor of data
 /// TODO: objects are not destructed when in free state
-template <class T, int maxN>
+
+enum class DiscardPolicy { DiscardOld, NoDiscard};
+enum class ReadOrderPolicy { AlwaysLast, Ordered};
+
+class WriterTag {};
+class ReaderTag {};
+
+template <class T>
 class IPCPooledChannel
 {
 public:
@@ -36,24 +76,34 @@ public:
     */
    struct Header
    {	
-   		std::atomic<uint32_t> inited;
-   		boost::interprocess::interprocess_mutex mutex_;
-   		boost::interprocess::interprocess_condition  read_ready_var_, write_ready_var_;
+   		struct dynamic_content
+   		{
+   			int freeindex;
+   			int readyindex;
+   			int readycounter; // NOT USED
+   		};
+
    		int readysize = 0;
    		int freesize = 0;
+   		int buffersize = 0;
+   		boost::interprocess::interprocess_mutex mutex_;
+   		boost::interprocess::interprocess_condition  read_ready_var_, write_ready_var_;
+   		boost::interprocess::offset_ptr<dynamic_content > readfreelist; // all together but separate
 
    		/// Constructs with a freelist
-   		Header(int effectiven) : freesize(effectiven)
+   		Header(int effectiven,Header::dynamic_content *pq) : freesize(effectiven),buffersize(effectiven)
    		{
+   			readfreelist = pq;
 			for(int i = 0; i < effectiven; i++)
-				freelist[i] = i;
+				pq[i].freeindex = i;
    		}
 
    		/// pushes back the pointer wrt given base
    		inline void readypushback(T* p, T*pbase) // newest = append
 		{
-			readylist[readylisttail] = p-pbase;
-			readylisttail = (readylisttail+1) % maxN;
+			readfreelist[readylisttail].readyindex = p-pbase;
+			readfreelist[readylisttail].readycounter = 10; // not used
+			readylisttail = (readylisttail+1) % buffersize;
 			readysize++;
 		}
 
@@ -61,32 +111,33 @@ public:
 		inline void readypopfront(T* & p, T*pbase) // oldest
 		{
 			readysize--;
-			p = pbase+readylist[readylisthead];
-			readylisthead = (readylisthead+1) % maxN;
+			p = pbase+readfreelist[readylisthead].readyindex;
+			readylisthead = (readylisthead+1) % buffersize;
 		}
 
 		/// pushes a new pointer into the free
 		inline void freepushfront(T* p, T*pbase)
 		{
-			freelist[freesize] = p-pbase;
+			// TODO verify counter => keep it in main ready list or otherwise free it
+			readfreelist[freesize].freeindex = p-pbase;
 			freesize++;
 		}
 
 		/// pops any new
 		void freepopany(T * & p,T*pbase)
 		{
-		    p = pbase+freelist[freesize-1];
+		    p = pbase+readfreelist[freesize-1].freeindex;
 		    freesize--;			
 		}
 	private:
-   		int readylist[maxN]; // circular list
-   		int freelist[maxN]; // indices of free slots
    		int readylisthead = 0;
    		int readylisttail = 0; // circular list structures
    };
 
    boost::interprocess::shared_memory_object shm_obj;
+   boost::interprocess::shared_memory_object shm_objmeta;
    boost::interprocess::mapped_region region;
+std::shared_ptr<boost::interprocess::named_mutex> mutex;
 
    Header * pheader;
    T * pbase;
@@ -94,74 +145,128 @@ public:
    int effectiven; 
    std::string aname;
 
+   struct PayloadMeta
+   {
+   		int sharedmemorysize;
+   };
+
    /// this is the effective content of the shared memory objects. It is configured as a
    /// variable length array
    struct Payload
    {
    		Header h;
-   		T first[1];
+   		boost::interprocess::offset_ptr<T> first;
    };
+
 
    void remove()
    {
 		shm_obj.remove(aname.c_str());
    }
-	/* creates the pool with n buffers, and the flag for the policy of discard in case of read
-     TODO: check name
-	 TODO: check size
-	 */
-	IPCPooledChannel(const char * name, int n, bool adiscardold, bool aalwayslast,bool first):
-		discard_old_(adiscardold),alwayslast_(aalwayslast)
+
+   bool valid() const { return !aname.empty(); }
+
+	IPCPooledChannel(std::string name, ReaderTag, ReadOrderPolicy orderpolicy):
+		discard_old_(false),alwayslast_(orderpolicy == ReadOrderPolicy::AlwaysLast)
 	{
-		if(n > maxN)
-			n = maxN;
-		else if(n < 0)
-		{
-			throw "ciao";			
-		}
-		aname = name; //
 
-		// TODO check
-		bool existent = false;
-
-		// 1) Payload should be aligned but shm memory is aligned
-		// 2) Payload size is effeviely: sizeof(Payload)+align_of(T)
-		int s = sizeof(Payload) + sizeof(T)*(n-1);
+		int effectivsize = 0;
 		try
 		{
-	 		boost::interprocess::shared_memory_object shm_obj1(boost::interprocess::create_only, name, boost::interprocess::read_write);
-	 		shm_obj.swap(shm_obj1);
-	 		shm_obj.truncate(s);
+
+	 		boost::interprocess::shared_memory_object shm_obj1(boost::interprocess::open_only, (name+"meta").c_str(), boost::interprocess::read_only);
+	 		std::cout << "truncated\n";
+			boost::interprocess::mapped_region r(shm_obj1,boost::interprocess::read_only);
+	 		std::cout << "cmapped\n";
+		 	PayloadMeta * ptr = (PayloadMeta*)r.get_address();
+		 	effectivsize = ptr->sharedmemorysize;
 	 	}
 	 	catch(...)
 	 	{
-	 		existent = true;
+	 		std::cerr << "IPC client missing shared memory " << name << "meta\n";
+	 		return;
 	 	}
+	 	if(!effectivsize)
+	 		return;
+	 	aname = name; //
 
-	 	if(existent)
-	 	{
-	 		boost::interprocess::shared_memory_object shm_obj1(boost::interprocess::open_only, name, boost::interprocess::read_write);
+		try
+		{
+	 		boost::interprocess::shared_memory_object shm_obj1(boost::interprocess::open_only, name.c_str(), boost::interprocess::read_write);
 	 		shm_obj.swap(shm_obj1);
-	 		shm_obj.truncate(s);
+	 		shm_obj.truncate(effectivsize);
+	 	}
+	 	catch(...)
+	 	{
+	 		std::cerr << "IPC client missing shared memory " << name << "\n";
+	 		return;
 	 	}
 
 		boost::interprocess::mapped_region r(shm_obj,boost::interprocess::read_write);
 		region.swap(r);
 		
-		effectiven = n;
-		Payload * pp = (Payload*)region.get_address();
-		pheader = &pp->h; // pointer local to the process
-		pbase = pp->first; // pointer local to the process
-			
-		// the first one initializes the header the other one should wait for it
-		uint32_t desidered = 0;
-		if(pheader->inited.compare_exchange_strong(desidered,1))
-		{
-			new (pheader) Header(effectiven);
+		uint8_t * ptr = (uint8_t*)region.get_address();
+		Payload * pp = (Payload*)ptr;
 
-		 	// TODO: use a message queue for notifying the state ... or better use a named semaphore
-		 	pheader->inited = 2;
+		pheader = &pp->h; // pointer local to the process
+		pbase = pp->first.get(); // pointer local to the process
+			
+	}
+
+	IPCPooledChannel(std::string name, WriterTag, int n, DiscardPolicy discardpolicy):
+		discard_old_(discardpolicy == DiscardPolicy::DiscardOld),alwayslast_(false)
+	{
+
+		// 1) Payload should be aligned but shm memory is aligned
+		// 2) Payload size is effeviely: sizeof(Payload)+align_of(T)
+		int s = sizeof(Payload) + (sizeof(typename Header::dynamic_content )+sizeof(T))*n;
+
+	 	try
+	 	{
+	 		boost::interprocess::shared_memory_object shm_obj1(boost::interprocess::open_or_create, name.c_str(), boost::interprocess::read_write);
+	 		shm_obj.swap(shm_obj1);
+	 		shm_obj.truncate(s);
+	 	}
+	 	catch(...)
+	 	{
+	 		std::cerr << "meta failed on create " << name <<"\n";
+	 		return; 
+	 	}
+
+		try
+		{
+	 		boost::interprocess::shared_memory_object shm_obj1(boost::interprocess::open_or_create, (name+"meta").c_str(), boost::interprocess::read_write);
+	 		shm_objmeta.swap(shm_obj1);
+	 		shm_objmeta.truncate(sizeof(PayloadMeta));
+	 	}
+	 	catch(...)
+	 	{
+	 		std::cerr << "existing server " + name << "meta\n";
+	 		return;
+	 	}
+		aname = name; 
+
+		{
+			boost::interprocess::mapped_region rm(shm_objmeta,boost::interprocess::read_write);
+			
+			PayloadMeta * ptr = (PayloadMeta*)rm.get_address();
+			ptr->sharedmemorysize = s;
 		}
+
+		boost::interprocess::mapped_region r(shm_obj,boost::interprocess::read_write);
+		region.swap(r);
+		
+		effectiven = n;
+		uint8_t * ptr = (uint8_t*)region.get_address();
+		Payload * pp = (Payload*)ptr;
+		pp->first = (T*)(ptr+sizeof(Payload) + sizeof(typename Header::dynamic_content)*n);
+
+		pheader = &pp->h; // pointer local to the process
+		pbase = pp->first.get(); // pointer local to the process
+			
+		std::cout << "allocating " << effectiven << " " << pheader << std::endl;
+ 		new (pheader) Header(effectiven,(typename Header::dynamic_content *)(ptr+sizeof(Payload)));
+		std::cout << "done "<<std::endl;
 	}
 
 	/// returns the count of data ready
@@ -190,8 +295,8 @@ public:
 				// TODO check what happens when someone read, why cannot discard if there is only one element in read_list
 				if(!discard_old_ || pheader->readysize < 2)
 				{
-					if(!discard_old_)
-						std::cout << "Queues are too small, no free, and only one (just prepared) ready\n";
+					//if(!discard_old_)
+					//	std::cout << "Queues are too small, no free, and only one (just prepared) ready\n";
 
 					while(pheader->freesize == 0)
 						pheader->write_ready_var_.wait(lk);
@@ -228,7 +333,7 @@ public:
 				scoped_lock lk(pheader->mutex_);
 				pheader->readypushback(x,pbase);
 			}
-			pheader->read_ready_var_.notify_one();
+			pheader->read_ready_var_.notify_all();
 		}
 	}
 
@@ -266,7 +371,7 @@ public:
 			scoped_lock lk(pheader->mutex_);
 			pheader->freepushfront(in,pbase);
 		}
-		pheader->write_ready_var_.notify_one();
+		pheader->write_ready_var_.notify_all();
 	}
 private:
 	
