@@ -6,6 +6,7 @@ addons:
   apt:
     update: true
 before_install:
+  - sudo apt-get update
   - sudo apt-get -y install libboost-dev-all
 before_script:
   - sudo unlink /usr/bin/gcc && sudo ln -s /usr/bin/gcc-5 /usr/bin/gcc
