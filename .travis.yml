@@ -1,13 +1,13 @@
 language: cpp
 script: cmake
 compiler: g++
-dist: xenial
+dist: focal
 addons:
   apt:
     update: true
 before_install:
   - sudo apt-get update
-  - sudo apt-get -y install libboost-dev-all
+  - sudo apt-get -y install libboost-all-dev
 before_script:
   - sudo unlink /usr/bin/gcc && sudo ln -s /usr/bin/gcc-5 /usr/bin/gcc
   # create a build folder for the out-of-source build
